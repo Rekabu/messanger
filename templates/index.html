@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мессенджер — {{ username }}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+    :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1e222b;
+        --border: #2a2f3a;
+        --text: #e7e9ee;
+        --text-dim: #8b93a3;
+        --accent: #4f8cff;
+        --accent-dim: #35507f;
+        --bubble-own: #2a4d8f;
+        --bubble-other: #232833;
+        --error: #ff5f6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+    }
+
+    /* --- Боковая панель --- */
+    #sidebar {
+        width: 260px;
+        min-width: 260px;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+    }
+    #sidebar-header {
+        padding: 18px 16px;
+        border-bottom: 1px solid var(--border);
+    }
+    #sidebar-header .label { font-size: 12px; color: var(--text-dim); }
+    #sidebar-header .name { font-size: 16px; font-weight: 600; margin-top: 2px; }
+    #sidebar-header a { font-size: 12px; color: var(--text-dim); }
+
+    #contacts {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+    }
+    .section-label {
+        font-size: 11px;
+        color: var(--text-dim);
+        padding: 10px 12px 4px;
+    }
+    .contact {
+        padding: 10px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        color: var(--text-dim);
+        font-size: 14px;
+        margin-bottom: 2px;
+        transition: background 0.15s;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .contact:hover { background: var(--panel-2); }
+    .contact.active {
+        background: var(--accent-dim);
+        color: var(--text);
+    }
+    .online-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #555;
+        flex-shrink: 0;
+    }
+    .online-dot.online { background: #3ecf6e; }
+    .room-icon { flex-shrink: 0; }
+
+    #bottom-forms {
+        border-top: 1px solid var(--border);
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    #bottom-forms .row { display: flex; gap: 6px; }
+    #bottom-forms input {
+        flex: 1;
+        min-width: 0;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 8px 10px;
+        font-size: 13px;
+    }
+    #bottom-forms button {
+        background: var(--accent);
+        border: none;
+        color: white;
+        border-radius: 6px;
+        padding: 0 12px;
+        cursor: pointer;
+        font-size: 13px;
+        white-space: nowrap;
+    }
+    #bottom-forms .hint {
+        font-size: 11px;
+        color: var(--text-dim);
+    }
+    details#group-form summary {
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--text-dim);
+        padding: 4px 2px;
+    }
+    details#group-form[open] summary { color: var(--text); }
+
+    /* --- Основная область чата --- */
+    #main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+    #chat-header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+        font-weight: 600;
+    }
+    #chat-header .sub { font-size: 12px; color: var(--text-dim); font-weight: 400; }
+    #chat-header .sub.typing { color: var(--accent); font-style: italic; }
+
+    #messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    #load-more-wrap {
+        text-align: center;
+        margin-bottom: 8px;
+    }
+    #load-more-btn {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+        border-radius: 14px;
+        padding: 6px 14px;
+        font-size: 12px;
+        cursor: pointer;
+    }
+    #load-more-btn:hover { color: var(--text); }
+
+    .msg-row { display: flex; }
+    .msg-row.own { justify-content: flex-end; }
+    .bubble {
+        max-width: 60%;
+        padding: 9px 13px;
+        border-radius: 14px;
+        background: var(--bubble-other);
+        font-size: 14px;
+        line-height: 1.4;
+    }
+    .msg-row.own .bubble { background: var(--bubble-own); }
+    .bubble .meta {
+        display: block;
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-bottom: 3px;
+    }
+    .bubble .msg-text {
+        display: inline;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .bubble img {
+        max-width: 260px;
+        max-height: 260px;
+        border-radius: 8px;
+        display: block;
+        margin-top: 4px;
+    }
+    .bubble a.file-link {
+        color: var(--accent);
+        text-decoration: none;
+        word-break: break-all;
+    }
+    .msg-actions {
+        display: inline-flex;
+        gap: 4px;
+        margin-left: 8px;
+        opacity: 0;
+        transition: opacity 0.15s;
+        vertical-align: middle;
+    }
+    .msg-row.own:hover .msg-actions { opacity: 1; }
+    .msg-action-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        line-height: 1;
+    }
+    .msg-action-btn:hover { background: rgba(255,255,255,0.1); }
+    .read-status {
+        font-size: 11px;
+        color: rgba(255,255,255,0.4);
+        margin-left: 6px;
+        vertical-align: middle;
+    }
+    .read-status.read { color: #6fc3ff; }
+    .edit-input {
+        background: var(--panel-2);
+        border: 1px solid var(--accent);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 14px;
+        width: 200px;
+    }
+
+    #composer {
+        border-top: 1px solid var(--border);
+        padding: 14px 20px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+    #composer input[type="text"] {
+        flex: 1;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 20px;
+        padding: 10px 16px;
+        font-size: 14px;
+    }
+    #composer input[type="text"]:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    #composer button, #composer label.file-btn {
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 20px;
+        padding: 10px 18px;
+        cursor: pointer;
+        font-size: 14px;
+    }
+    #composer label.file-btn {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+    }
+    #composer input[type="file"] { display: none; }
+
+    #upload-error {
+        display: none;
+        background: rgba(255, 95, 107, 0.12);
+        border-top: 1px solid var(--error);
+        color: var(--error);
+        padding: 8px 20px;
+        font-size: 13px;
+    }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div id="sidebar-header">
+        <div class="label">Вы вошли как</div>
+        <div class="name">{{ username }}</div>
+        <a href="{{ url_for('logout') }}">Выйти</a>
+    </div>
+
+    <div id="contacts">
+        <div class="contact active" data-recipient="{{ public_room }}">
+            <span class="online-dot"></span><span>{{ public_room }} (общий чат)</span>
+        </div>
+
+        {% if rooms %}
+        <div class="section-label">Группы</div>
+        {% for room in rooms %}
+        <div class="contact" data-recipient="room:{{ room.id }}">
+            <span class="room-icon">👥</span><span>{{ room.name }}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        <div class="section-label">Личные</div>
+        <!-- личные контакты добавляются сюда через JS -->
+    </div>
+
+    <div id="bottom-forms">
+        <div class="row">
+            <input type="text" id="new-contact-input" placeholder="Написать пользователю...">
+            <button id="new-contact-btn">+</button>
+        </div>
+
+        <details id="group-form">
+            <summary>Создать группу</summary>
+            <form method="POST" action="{{ url_for('create_room_route') }}" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+                <input type="text" name="name" placeholder="Название группы" required>
+                <input type="text" name="members" placeholder="Участники через запятую">
+                <div class="hint">Имена должны совпадать с существующими логинами</div>
+                <button type="submit" style="border-radius:6px;padding:8px;">Создать</button>
+            </form>
+        </details>
+    </div>
+</div>
+
+<div id="main">
+    <div id="chat-header">
+        <div id="chat-title">{{ public_room }}</div>
+        <div class="sub" id="chat-subtitle">Сообщения видят все участники</div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="upload-error"></div>
+
+    <div id="composer">
+        <label class="file-btn" for="file-input">📎</label>
+        <input type="file" id="file-input">
+        <input type="text" id="text-input" placeholder="Написать сообщение...">
+        <button id="send-btn">Отправить</button>
+    </div>
+</div>
+
+<script>
+    const USERNAME = {{ username|tojson }};
+    const PUBLIC_ROOM = {{ public_room|tojson }};
+
+    let currentRecipient = PUBLIC_ROOM;
+    const knownContacts = new Set();
+    const onlineUsers = new Set();
+    let typingTimeout = null;
+    let lastTypingSentAt = 0;
+
+    // conversations[recipientKey] = { messages: [...], hasMore: bool, loaded: bool }
+    const conversations = {};
+
+    function isGroupRecipient(recipient) {
+        return recipient === PUBLIC_ROOM || recipient.startsWith("room:");
+    }
+
+    // ключ диалога с точки зрения текущего пользователя:
+    // для публичного чата и групп - сам recipient; для личных сообщений - "другая сторона"
+    function conversationKeyFor(data) {
+        if (isGroupRecipient(data.recipient)) return data.recipient;
+        return data.username === USERNAME ? data.recipient : data.username;
+    }
+
+    const socket = io();
+
+    socket.on("connect", () => {
+        socket.emit("join", { username: USERNAME });
+        loadConversation(currentRecipient);
+    });
+
+    // ---------- Загрузка сообщений (пагинация) ----------
+
+    async function loadConversation(recipient, { prepend = false } = {}) {
+        if (!conversations[recipient]) {
+            conversations[recipient] = { messages: [], hasMore: false, loaded: false };
+        }
+        const conv = conversations[recipient];
+
+        let url = `/api/messages?with=${encodeURIComponent(recipient)}`;
+        if (prepend && conv.messages.length) {
+            url += `&before_id=${conv.messages[0].id}`;
+        }
+
+        let data;
+        try {
+            const res = await fetch(url);
+            if (!res.ok) return;
+            data = await res.json();
+        } catch (e) {
+            return;
+        }
+
+        if (prepend) {
+            conv.messages = [...data.messages, ...conv.messages];
+        } else {
+            conv.messages = data.messages;
+        }
+        conv.hasMore = data.has_more;
+        conv.loaded = true;
+
+        if (currentRecipient === recipient) {
+            renderConversation(recipient, { keepScroll: prepend });
+        }
+    }
+
+    function renderConversation(recipient, { keepScroll = false } = {}) {
+        const box = document.getElementById("messages");
+        const conv = conversations[recipient] || { messages: [], hasMore: false };
+
+        const prevScrollHeight = box.scrollHeight;
+        const prevScrollTop = box.scrollTop;
+
+        box.innerHTML = "";
+
+        if (conv.hasMore) {
+            const wrap = document.createElement("div");
+            wrap.id = "load-more-wrap";
+            wrap.innerHTML = `<button id="load-more-btn">Загрузить более старые</button>`;
+            box.appendChild(wrap);
+            wrap.querySelector("button").addEventListener("click", () => {
+                loadConversation(recipient, { prepend: true });
+            });
+        }
+
+        conv.messages.forEach(renderMessage);
+
+        if (keepScroll) {
+            box.scrollTop = box.scrollHeight - prevScrollHeight + prevScrollTop;
+        } else {
+            box.scrollTop = box.scrollHeight;
+        }
+    }
+
+    // ---------- Socket-события ----------
+
+    socket.on("message", (data) => {
+        const key = conversationKeyFor(data);
+
+        if (!conversations[key]) {
+            conversations[key] = { messages: [], hasMore: false, loaded: false };
+        }
+        conversations[key].messages.push(data);
+
+        if (key !== PUBLIC_ROOM && !isGroupRecipient(key)) {
+            addContact(key);
+        }
+
+        if (currentRecipient === key) {
+            renderMessage(data);
+            scrollToBottom();
+
+            if (data.recipient === USERNAME && data.username === currentRecipient) {
+                socket.emit("mark_read", { peer: data.username });
+            }
+        }
+    });
+
+    socket.on("online_users", (data) => {
+        onlineUsers.clear();
+        (data.users || []).forEach(u => onlineUsers.add(u));
+        document.querySelectorAll(".contact").forEach(c => {
+            if (c.dataset.recipient) updateContactStatus(c.dataset.recipient);
+        });
+    });
+
+    socket.on("user_online", (data) => {
+        onlineUsers.add(data.username);
+        updateContactStatus(data.username);
+    });
+
+    socket.on("user_offline", (data) => {
+        onlineUsers.delete(data.username);
+        updateContactStatus(data.username);
+    });
+
+    socket.on("typing", (data) => {
+        const relevantToView =
+            (currentRecipient === PUBLIC_ROOM && data.recipient === PUBLIC_ROOM) ||
+            (isGroupRecipient(currentRecipient) && data.recipient === currentRecipient) ||
+            (!isGroupRecipient(currentRecipient) && data.username === currentRecipient && data.recipient === USERNAME);
+
+        if (!relevantToView) return;
+
+        const subtitle = document.getElementById("chat-subtitle");
+        subtitle.textContent = `${data.username} печатает...`;
+        subtitle.classList.add("typing");
+
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+            subtitle.classList.remove("typing");
+            subtitle.textContent = subtitleTextFor(currentRecipient);
+        }, 2000);
+    });
+
+    socket.on("messages_read", (data) => {
+        const peer = data.reader;
+        document.querySelectorAll(`.msg-row.own[data-recipient="${cssEscape(peer)}"] .read-status`).forEach(el => {
+            el.textContent = "✓✓";
+            el.classList.add("read");
+        });
+        const conv = conversations[peer];
+        if (conv) {
+            conv.messages.forEach(m => {
+                if (m.username === USERNAME && m.recipient === peer) m.read = 1;
+            });
+        }
+    });
+
+    socket.on("message_edited", (data) => {
+        const row = document.querySelector(`.msg-row[data-id="${data.id}"]`);
+        if (row) {
+            const textSpan = row.querySelector(".msg-text");
+            if (textSpan) textSpan.textContent = data.text;
+        }
+        Object.values(conversations).forEach(conv => {
+            const m = conv.messages.find(m => m.id === data.id);
+            if (m) m.text = data.text;
+        });
+    });
+
+    socket.on("message_deleted", (data) => {
+        const row = document.querySelector(`.msg-row[data-id="${data.id}"]`);
+        if (row) row.remove();
+        Object.values(conversations).forEach(conv => {
+            conv.messages = conv.messages.filter(m => m.id !== data.id);
+        });
+    });
+
+    // ---------- Рендер одного сообщения ----------
+
+    function renderMessage(data) {
+        const isOwn = data.username === USERNAME;
+
+        const row = document.createElement("div");
+        row.className = "msg-row" + (isOwn ? " own" : "");
+        if (data.id) row.dataset.id = data.id;
+        row.dataset.recipient = data.recipient;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+
+        let inner = `<span class="meta">${escapeHtml(data.username)} · ${escapeHtml(data.time)}</span>`;
+        inner += `<span class="msg-text">${escapeHtml(data.text || "")}</span>`;
+
+        if (data.file_path) {
+            const isImage = /\.(png|jpe?g|gif|webp)$/i.test(data.file_path);
+            if (isImage) {
+                inner += `<img src="${data.file_path}" alt="вложение">`;
+            } else {
+                inner += `<a class="file-link" href="${data.file_path}" target="_blank">📎 ${escapeHtml(data.file_path.split('/').pop())}</a>`;
+            }
+        }
+
+        if (isOwn && !isGroupRecipient(data.recipient)) {
+            const readMark = data.read ? "✓✓" : "✓";
+            inner += `<span class="read-status ${data.read ? 'read' : ''}">${readMark}</span>`;
+        }
+
+        if (isOwn && data.id) {
+            const showEdit = data.text && !data.file_path;
+            inner += `
+                <div class="msg-actions">
+                    ${showEdit ? '<button class="msg-action-btn" data-action="edit">✏️</button>' : ''}
+                    <button class="msg-action-btn" data-action="delete">🗑</button>
+                </div>`;
+        }
+
+        bubble.innerHTML = inner;
+        row.appendChild(bubble);
+        document.getElementById("messages").appendChild(row);
+
+        if (isOwn && data.id) {
+            const editBtn = bubble.querySelector('[data-action="edit"]');
+            const deleteBtn = bubble.querySelector('[data-action="delete"]');
+            if (editBtn) editBtn.addEventListener("click", () => startEdit(data.id, bubble));
+            if (deleteBtn) deleteBtn.addEventListener("click", () => confirmDelete(data.id));
+        }
+    }
+
+    function startEdit(id, bubble) {
+        const textSpan = bubble.querySelector(".msg-text");
+        const currentText = textSpan.textContent;
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "edit-input";
+        input.value = currentText;
+
+        textSpan.replaceWith(input);
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        function finishEdit(save) {
+            const newText = input.value.trim();
+            const newSpan = document.createElement("span");
+            newSpan.className = "msg-text";
+
+            if (save && newText && newText !== currentText) {
+                socket.emit("edit_message", { id: id, text: newText });
+                newSpan.textContent = newText;
+            } else {
+                newSpan.textContent = currentText;
+            }
+            input.replaceWith(newSpan);
+        }
+
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") finishEdit(true);
+            if (e.key === "Escape") finishEdit(false);
+        });
+        input.addEventListener("blur", () => finishEdit(true));
+    }
+
+    function confirmDelete(id) {
+        if (confirm("Удалить это сообщение?")) {
+            socket.emit("delete_message", { id: id });
+        }
+    }
+
+    // ---------- Вспомогательные функции ----------
+
+    function escapeHtml(str) {
+        const div = document.createElement("div");
+        div.textContent = str ?? "";
+        return div.innerHTML;
+    }
+
+    function cssEscape(str) {
+        return window.CSS && CSS.escape ? CSS.escape(str) : str;
+    }
+
+    function scrollToBottom() {
+        const box = document.getElementById("messages");
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function addContact(name) {
+        if (name === USERNAME || isGroupRecipient(name) || knownContacts.has(name)) return;
+        knownContacts.add(name);
+        const el = document.createElement("div");
+        el.className = "contact";
+        el.dataset.recipient = name;
+        el.innerHTML = `<span class="online-dot"></span><span>${escapeHtml(name)}</span>`;
+        el.addEventListener("click", () => switchTo(name, el));
+        document.getElementById("contacts").appendChild(el);
+        updateContactStatus(name);
+    }
+
+    function updateContactStatus(name) {
+        const el = document.querySelector(`.contact[data-recipient="${cssEscape(name)}"] .online-dot`);
+        if (el) el.classList.toggle("online", onlineUsers.has(name));
+    }
+
+    function subtitleTextFor(recipient) {
+        if (recipient === PUBLIC_ROOM) return "Сообщения видят все участники";
+        if (recipient.startsWith("room:")) return "Групповой чат";
+        return "Личная переписка";
+    }
+
+    function switchTo(recipient, el) {
+        currentRecipient = recipient;
+        document.querySelectorAll(".contact").forEach(c => c.classList.remove("active"));
+        if (el) el.classList.add("active");
+
+        clearTimeout(typingTimeout);
+        const subtitle = document.getElementById("chat-subtitle");
+        subtitle.classList.remove("typing");
+
+        const title = el ? el.querySelector("span:last-child").textContent : recipient;
+        document.getElementById("chat-title").textContent = title;
+        subtitle.textContent = subtitleTextFor(recipient);
+
+        if (conversations[recipient] && conversations[recipient].loaded) {
+            renderConversation(recipient);
+        } else {
+            document.getElementById("messages").innerHTML = "";
+            loadConversation(recipient);
+        }
+
+        if (!isGroupRecipient(recipient)) {
+            socket.emit("mark_read", { peer: recipient });
+        }
+    }
+
+    // клики по уже отрисованным контактам (общий чат + группы из шаблона)
+    document.querySelectorAll(".contact[data-recipient]").forEach(el => {
+        el.addEventListener("click", () => switchTo(el.dataset.recipient, el));
+    });
+
+    // добавление личного контакта вручную
+    document.getElementById("new-contact-btn").addEventListener("click", () => {
+        const input = document.getElementById("new-contact-input");
+        const name = input.value.trim();
+        if (name && name !== USERNAME) {
+            addContact(name);
+            input.value = "";
+        }
+    });
+    document.getElementById("new-contact-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") document.getElementById("new-contact-btn").click();
+    });
+
+    // отправка текстового сообщения
+    document.getElementById("send-btn").addEventListener("click", sendMessage);
+    document.getElementById("text-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") sendMessage();
+    });
+    document.getElementById("text-input").addEventListener("input", () => {
+        const now = Date.now();
+        if (now - lastTypingSentAt > 1500) {
+            lastTypingSentAt = now;
+            socket.emit("typing", { recipient: currentRecipient });
+        }
+    });
+
+    function sendMessage() {
+        const input = document.getElementById("text-input");
+        const text = input.value.trim();
+        if (!text) return;
+        socket.emit("message", {
+            recipient: currentRecipient,
+            text: text
+        });
+        input.value = "";
+    }
+
+    // отправка файла
+    document.getElementById("file-input").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const errorBox = document.getElementById("upload-error");
+        errorBox.style.display = "none";
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("recipient", currentRecipient);
+
+        try {
+            const res = await fetch("/upload", { method: "POST", body: formData });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                errorBox.textContent = data.error || "Не удалось загрузить файл";
+                errorBox.style.display = "block";
+            }
+        } catch (err) {
+            errorBox.textContent = "Ошибка сети при загрузке файла";
+            errorBox.style.display = "block";
+        }
+        e.target.value = "";
+    });
+</script>
+
+</body>
+</html>
