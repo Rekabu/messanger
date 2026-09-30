@@ -1,3 +1,10 @@
+import os
+
+# eventlet нужен только на сервере (ASYNC_MODE=eventlet); локально работаем без него
+if os.environ.get("ASYNC_MODE") == "eventlet":
+    import eventlet
+    eventlet.monkey_patch()
+
 from flask import Flask, render_template, request, send_from_directory, session, redirect, url_for, flash, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -6,31 +13,37 @@ from functools import wraps
 from datetime import datetime
 import sqlite3
 import os
-import eventlet
-eventlet.monkey_patch(os=False, thread=False)
+
 
 app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+
+@app.after_request
+def add_no_cache_headers(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "секретный-ключ-поменяй-меня")
 
 UPLOAD_FOLDER = "uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# --- Ограничения на загрузку файлов ---
-app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024  # 15 МБ максимум на файл
+app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 ALLOWED_EXTENSIONS = {
-    "png", "jpg", "jpeg", "gif", "webp",       # изображения
-    "pdf", "txt", "doc", "docx", "xls", "xlsx", # документы
-    "zip", "rar", "7z",                        # архивы
-    "mp3", "wav", "mp4", "mov"                  # медиа
+    "png", "jpg", "jpeg", "gif", "webp",
+    "pdf", "txt", "doc", "docx", "xls", "xlsx",
+    "zip", "rar", "7z",
+    "mp3", "wav", "mp4", "mov",
+    "webm", "ogg"
 }
 
-socketio = SocketIO(app, async_mode='eventlet')
+# async_mode='threading' — без eventlet, без monkey_patch, работает стабильно
+socketio = SocketIO(app, async_mode=os.environ.get("ASYNC_MODE", "threading"))
 
-PUBLIC_ROOM = "Всем"
 MESSAGES_PAGE_SIZE = 30
-
-# username -> множество socket.io session id (для поддержки нескольких вкладок/устройств)
 online_users = {}
 
 
@@ -39,15 +52,13 @@ def allowed_file(filename):
 
 
 def is_group_recipient(recipient):
-    """Публичный чат и групповые комнаты - настоящие socket.io комнаты,
-    куда уже вступили все участники, поэтому им достаточно одного emit()."""
-    return recipient == PUBLIC_ROOM or recipient.startswith("room:")
+    return recipient.startswith("room:")
 
 
 # ---------- База данных ----------
 
 def get_db():
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect("chat.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -87,11 +98,18 @@ def init_db():
             PRIMARY KEY (room_id, username)
         )
     """)
-    # миграция для уже существующих баз, где колонки read ещё нет
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS personal_chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user1 TEXT NOT NULL,
+            user2 TEXT NOT NULL,
+            UNIQUE(user1, user2)
+        )
+    """)
     try:
         cursor.execute("ALTER TABLE messages ADD COLUMN read INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
-        pass  # колонка уже есть
+        pass
     conn.commit()
     conn.close()
 
@@ -135,7 +153,6 @@ def save_message(username, recipient, text, time, file_path=None):
 
 
 def mark_messages_read(peer, me):
-    """Отмечает прочитанными все сообщения, которые peer прислал мне (me) лично."""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
@@ -171,6 +188,47 @@ def delete_message_by_id(message_id):
     conn.close()
 
 
+def add_personal_chat(user1, user2):
+    a, b = sorted([user1, user2])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR IGNORE INTO personal_chats (user1, user2) VALUES (?, ?)",
+        (a, b)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_personal_chats(username):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user1, user2 FROM personal_chats
+        WHERE user1 = ? OR user2 = ?
+        ORDER BY id
+    """, (username, username))
+    rows = cursor.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        peer = row["user2"] if row["user1"] == username else row["user1"]
+        result.append(peer)
+    return result
+
+
+def delete_personal_chat(user1, user2):
+    a, b = sorted([user1, user2])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM personal_chats WHERE user1 = ? AND user2 = ?",
+        (a, b)
+    )
+    conn.commit()
+    conn.close()
+
+
 def row_to_message_dict(row):
     return {
         "id": row["id"],
@@ -184,39 +242,30 @@ def row_to_message_dict(row):
 
 
 def fetch_messages_page(recipient, me, before_id=None):
-    """Возвращает (messages, has_more) - до MESSAGES_PAGE_SIZE сообщений диалога/комнаты,
-    отсортированных по времени (старые -> новые), плюс более старая страница подгружается через before_id."""
     conn = get_db()
     cursor = conn.cursor()
-
     if is_group_recipient(recipient):
         where = "recipient = ?"
         params = [recipient]
     else:
-        # личный диалог: сообщения, где я <-> peer в любую сторону
         where = "((username = ? AND recipient = ?) OR (username = ? AND recipient = ?))"
         params = [me, recipient, recipient, me]
-
     if before_id:
         where += " AND id < ?"
         params.append(before_id)
-
     query = f"""
         SELECT id, username, recipient, text, time, file_path, read FROM messages
         WHERE {where}
         ORDER BY id DESC
         LIMIT ?
     """
-    params.append(MESSAGES_PAGE_SIZE + 1)  # +1 чтобы узнать, есть ли ещё более старые
-
+    params.append(MESSAGES_PAGE_SIZE + 1)
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
-
     has_more = len(rows) > MESSAGES_PAGE_SIZE
     rows = rows[:MESSAGES_PAGE_SIZE]
-    rows.reverse()  # обратно в хронологический порядок
-
+    rows.reverse()
     return [row_to_message_dict(r) for r in rows], has_more
 
 
@@ -227,7 +276,6 @@ def create_room(name, creator, member_usernames):
     cursor = conn.cursor()
     cursor.execute("INSERT INTO rooms (name, created_by) VALUES (?, ?)", (name, creator))
     room_id = cursor.lastrowid
-
     all_members = set(member_usernames)
     all_members.add(creator)
     for m in all_members:
@@ -267,7 +315,6 @@ def is_room_member(room_id, username):
 
 
 def room_id_from_recipient(recipient):
-    """'room:12' -> 12, либо None если формат не подходит."""
     if not recipient.startswith("room:"):
         return None
     try:
@@ -281,7 +328,9 @@ def room_id_from_recipient(recipient):
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if "username" not in session:
+        # ВАЖНО: not session.get("username") — срабатывает и когда ключа нет,
+        # и когда значение пустое/None
+        if not session.get("username"):
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return wrapper
@@ -309,6 +358,7 @@ def register():
         session["username"] = username
         return redirect(url_for("index"))
 
+    # GET — показываем форму
     return render_template("register.html")
 
 
@@ -326,23 +376,67 @@ def login():
         session["username"] = username
         return redirect(url_for("index"))
 
+    # GET — показываем форму. НИКАКИХ редиректов здесь быть не должно!
     return render_template("login.html")
 
 
 @app.route("/logout")
 def logout():
-    session.pop("username", None)
+    username = session.pop("username", None)
+    # Открытый сокет хранит старую копию сессии, поэтому закрываем его вручную
+    if username:
+        for sid in list(online_users.get(username, ())):
+            try:
+                socketio.server.disconnect(sid, namespace="/")
+            except Exception:
+                pass
     return redirect(url_for("login"))
 
 
 # ---------- Основные маршруты ----------
+
+@app.route("/api/user_exists")
+@login_required
+def api_user_exists():
+    name = request.args.get("name", "").strip()
+    if not name:
+        return jsonify({"exists": False})
+    return jsonify({"exists": user_exists(name)})
+
+
+@app.route("/api/add_chat", methods=["POST"])
+@login_required
+def api_add_chat():
+    me = session["username"]
+    peer = request.json.get("peer", "").strip()
+
+    if not peer or not user_exists(peer) or peer == me:
+        return jsonify({"error": "Неверный пользователь"}), 400
+
+    add_personal_chat(me, peer)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/delete_chat", methods=["POST"])
+@login_required
+def api_delete_chat():
+    me = session["username"]
+    peer = request.json.get("peer", "").strip()
+
+    if not peer:
+        return jsonify({"error": "Неверный пользователь"}), 400
+
+    delete_personal_chat(me, peer)
+    return jsonify({"ok": True})
+
 
 @app.route("/")
 @login_required
 def index():
     username = session["username"]
     rooms = get_user_rooms(username)
-    return render_template("index.html", username=username, public_room=PUBLIC_ROOM, rooms=rooms)
+    personal = get_personal_chats(username)
+    return render_template("index.html", username=username, rooms=rooms, personal=personal)
 
 
 @app.route("/rooms/create", methods=["POST"])
@@ -388,8 +482,11 @@ def api_messages():
 @login_required
 def upload():
     file = request.files.get("file")
-    username = session["username"]  # берём из сессии, а не из формы
-    recipient = request.form.get("recipient", PUBLIC_ROOM)
+    username = session["username"]
+    recipient = request.form.get("recipient", "")
+
+    if not recipient:
+        return jsonify({"error": "Не указан получатель"}), 400
 
     room_id = room_id_from_recipient(recipient)
     if room_id is not None and not is_room_member(room_id, username):
@@ -403,7 +500,6 @@ def upload():
         return jsonify({"error": f"Недопустимый тип файла. Разрешены: {allowed}"}), 400
 
     filename = secure_filename(file.filename)
-    # избегаем перезаписи одноимённых файлов от разных пользователей
     filename = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{filename}"
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     file.save(filepath)
@@ -443,14 +539,12 @@ def uploaded_file(filename):
 
 @socketio.on('connect')
 def handle_connect():
-    if "username" not in session:
-        return False  # отклоняем подключение неавторизованных
+    if not session.get("username"):
+        return False
 
     username = session["username"]
     join_room(username)
-    join_room(PUBLIC_ROOM)
 
-    # вступаем во все свои групповые комнаты
     for room in get_user_rooms(username):
         join_room(f"room:{room['id']}")
 
@@ -458,9 +552,9 @@ def handle_connect():
     online_users.setdefault(username, set()).add(request.sid)
 
     if is_first_connection:
-        emit("user_online", {"username": username}, to=PUBLIC_ROOM, include_self=False)
+        emit("user_online", {"username": username}, broadcast=True, include_self=False)
 
-    emit("online_users", {"users": list(online_users.keys())})
+    emit("online_users", {"users": list(online_users.keys())}, broadcast=True)
 
 
 @socketio.on('disconnect')
@@ -472,30 +566,33 @@ def handle_disconnect():
     online_users[username].discard(request.sid)
     if not online_users[username]:
         del online_users[username]
-        emit("user_offline", {"username": username}, to=PUBLIC_ROOM, include_self=False)
+        emit("user_offline", {"username": username}, broadcast=True, include_self=False)
 
 
 @socketio.on('typing')
 def handle_typing(data):
-    if "username" not in session:
+    if not session.get("username"):
         return
 
     username = session["username"]
-    recipient = data.get("recipient", PUBLIC_ROOM)
+    recipient = data.get("recipient", "")
+    if not recipient:
+        return
+
     payload = {"username": username, "recipient": recipient}
     emit("typing", payload, to=recipient, include_self=False)
 
 
 @socketio.on('mark_read')
 def handle_mark_read(data):
-    if "username" not in session:
+    if not session.get("username"):
         return
 
     me = session["username"]
     peer = data.get("peer")
 
     if not peer or is_group_recipient(peer):
-        return  # статус прочтения только для личных 1:1 диалогов
+        return
 
     mark_messages_read(peer, me)
     emit("messages_read", {"reader": me}, to=peer)
@@ -503,19 +600,19 @@ def handle_mark_read(data):
 
 @socketio.on('message')
 def handle_message(data):
-    if "username" not in session:
-        return  # игнорируем сообщения от неавторизованных
+    if not session.get("username"):
+        return
 
-    username = session["username"]  # доверяем только серверной сессии
-    recipient = data.get("recipient", PUBLIC_ROOM)
+    username = session["username"]
+    recipient = data.get("recipient", "")
     text = (data.get("text") or "").strip()
 
-    if not text:
+    if not text or not recipient:
         return
 
     room_id = room_id_from_recipient(recipient)
     if room_id is not None and not is_room_member(room_id, username):
-        return  # не даём слать сообщения в чужие группы
+        return
 
     time = datetime.now().strftime("%H:%M")
     message_id = save_message(username, recipient, text, time, None)
@@ -537,7 +634,7 @@ def handle_message(data):
 
 @socketio.on('edit_message')
 def handle_edit_message(data):
-    if "username" not in session:
+    if not session.get("username"):
         return
 
     username = session["username"]
@@ -549,7 +646,7 @@ def handle_edit_message(data):
 
     row = get_message(message_id)
     if row is None or row["username"] != username:
-        return  # нельзя редактировать чужое сообщение
+        return
 
     update_message_text(message_id, new_text)
 
@@ -563,7 +660,7 @@ def handle_edit_message(data):
 
 @socketio.on('delete_message')
 def handle_delete_message(data):
-    if "username" not in session:
+    if not session.get("username"):
         return
 
     username = session["username"]
@@ -574,7 +671,7 @@ def handle_delete_message(data):
 
     row = get_message(message_id)
     if row is None or row["username"] != username:
-        return  # нельзя удалить чужое сообщение
+        return
 
     recipient = row["recipient"]
     file_path = row["file_path"]
@@ -586,7 +683,7 @@ def handle_delete_message(data):
             if os.path.exists(full_path):
                 os.remove(full_path)
         except OSError:
-            pass  # файл уже мог быть удалён вручную - не критично
+            pass
 
     payload = {"id": message_id}
     emit("message_deleted", payload, to=recipient)
@@ -594,6 +691,8 @@ def handle_delete_message(data):
         emit("message_deleted", payload, to=username)
 
 
+init_db()  # создаём таблицы и при запуске через gunicorn
+
+
 if __name__ == "__main__":
-    init_db()
-    socketio.run(app, debug=True)
+    socketio.run(app, debug=True, host="127.0.0.1", port=5000, allow_unsafe_werkzeug=True)

@@ -1,116 +1,41 @@
-
-
-Login · HTML
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Вход — Мессенджер</title>
+<title>Вход</title>
 <style>
-    :root {
-        --bg: #0f1115;
-        --panel: #171a21;
-        --panel-2: #1e222b;
-        --border: #2a2f3a;
-        --text: #e7e9ee;
-        --text-dim: #8b93a3;
-        --accent: #4f8cff;
-        --error: #ff5f6b;
-    }
-    * { box-sizing: border-box; }
-    body {
-        margin: 0;
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--bg);
-        color: var(--text);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
-    .card {
-        width: 320px;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 28px;
-    }
-    h1 {
-        font-size: 20px;
-        margin: 0 0 20px;
-    }
-    label {
-        display: block;
-        font-size: 13px;
-        color: var(--text-dim);
-        margin-bottom: 6px;
-    }
-    input {
-        width: 100%;
-        background: var(--panel-2);
-        border: 1px solid var(--border);
-        color: var(--text);
-        border-radius: 8px;
-        padding: 10px 12px;
-        font-size: 14px;
-        margin-bottom: 16px;
-    }
-    input:focus { outline: none; border-color: var(--accent); }
-    button {
-        width: 100%;
-        background: var(--accent);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 11px;
-        font-size: 14px;
-        cursor: pointer;
-    }
-    .switch {
-        margin-top: 16px;
-        font-size: 13px;
-        color: var(--text-dim);
-        text-align: center;
-    }
-    .switch a { color: var(--accent); text-decoration: none; }
-    .flash {
-        background: rgba(255, 95, 107, 0.12);
-        border: 1px solid var(--error);
-        color: var(--error);
-        padding: 8px 12px;
-        border-radius: 8px;
-        font-size: 13px;
-        margin-bottom: 16px;
-    }
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;align-items:center;justify-content:center;background:#000;color:#eee;font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.card{width:min(360px,92vw);background:#0b0b0b;border:1px solid #1c1c1c;border-radius:14px;padding:26px;display:flex;flex-direction:column;gap:14px}
+h1{margin:0 0 4px;font-size:22px}
+form{display:flex;flex-direction:column;gap:12px}
+input{font:inherit;color:inherit;padding:11px 14px;border-radius:10px;border:1px solid #2a2a2a;background:#000;outline:none}
+input:focus{border-color:#555}
+button{font:inherit;padding:11px;border:0;border-radius:10px;background:#2b6cd4;color:#fff;cursor:pointer}
+button:hover{background:#3a7be6}
+.flash{padding:10px 12px;border-radius:8px;background:#3a1518;color:#ffb3b3;font-size:13px}
+.alt{text-align:center;color:#8a94a6}
+a{color:#7ab7ff;text-decoration:none}
+a:hover{text-decoration:underline}
 </style>
 </head>
 <body>
 <div class="card">
-    <h1>Вход в мессенджер</h1>
- 
-    {% with messages = get_flashed_messages() %}
-        {% if messages %}
-            {% for m in messages %}
-                <div class="flash">{{ m }}</div>
-            {% endfor %}
-        {% endif %}
-    {% endwith %}
- 
-    <form method="POST">
-        <label for="username">Имя пользователя</label>
-        <input type="text" id="username" name="username" autocomplete="username" required>
- 
-        <label for="password">Пароль</label>
-        <input type="password" id="password" name="password" autocomplete="current-password" required>
- 
-        <button type="submit">Войти</button>
-    </form>
- 
-    <div class="switch">
-        Нет аккаунта? <a href="{{ url_for('register') }}">Зарегистрироваться</a>
-    </div>
+  <h1>Вход</h1>
+
+  {% with messages = get_flashed_messages() %}
+    {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+  {% endwith %}
+
+  <form method="post" action="/login">
+    <input type="text" name="username" placeholder="Имя пользователя" autocomplete="username" required autofocus>
+    <input type="password" name="password" placeholder="Пароль" autocomplete="current-password" required>
+    <button type="submit">Войти</button>
+  </form>
+
+  <div class="alt">Нет аккаунта? <a href="/register">Зарегистрироваться</a></div>
 </div>
 </body>
 </html>
- 
